@@ -1,0 +1,4 @@
+/vendor
+.claude
+.phpunit.cache
+.idea

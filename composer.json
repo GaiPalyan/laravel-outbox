@@ -1,0 +1,64 @@
+{
+    "name": "gpalyan/laravel-outbox",
+    "description": "Laravel package for Transactional Outbox/Inbox patterns",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "laravel",
+        "outbox",
+        "inbox",
+        "messaging",
+        "event-driven"
+    ],
+    "require": {
+        "php": "^8.4",
+        "illuminate/support": "^12.0|^13.0",
+        "illuminate/database": "^12.0|^13.0",
+        "illuminate/console": "^12.0|^13.0",
+        "illuminate/queue": "^12.0|^13.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^10.0|^11.0",
+        "pestphp/pest": "^3.0",
+        "pestphp/pest-plugin-laravel": "^3.0",
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "TransactionalOutbox\\": "src/TransactionalOutbox/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "TransactionalOutbox\\TransactionalOutboxServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "phpstan/extension-installer": true,
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "scripts": {
+        "test": "pest",
+        "test-coverage": "pest --coverage --min=80",
+        "analyse": "phpstan analyse --memory-limit=2G",
+        "format": "pint",
+        "check": [
+            "@format",
+            "@analyse",
+            "@test"
+        ]
+    }
+}
