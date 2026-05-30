@@ -11,6 +11,7 @@ use Illuminate\Database\Eloquent\MassPrunable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
+use TransactionalOutbox\Data\OutboxDraft;
 use TransactionalOutbox\Enums\Database\OutboxMessageColumn;
 use TransactionalOutbox\Enums\OutboxStatus;
 use TransactionalOutbox\Models\Builders\OutboxMessageBuilder;
@@ -83,7 +84,6 @@ class OutboxMessage extends Model
         parent::boot();
 
         static::creating(function (self $model) {
-            $model->deduplication_key ??= self::dedup($model->payload);
             $model->status_id ??= OutboxStatus::Pending->id();
             $model->attempts ??= 0;
             $model->next_retry_at ??= Carbon::now();
@@ -91,30 +91,29 @@ class OutboxMessage extends Model
     }
 
     /**
-     * @param  array<int, array{channel: string, payload: string, headers?: array<string, mixed>}>  $messages
+     * Bulk-insert messages, ignoring rows whose deduplication_key already exists
+     * (including duplicates within the batch — the unique index handles those).
+     *
+     * @param  list<OutboxDraft>  $drafts
      */
-    public static function storeBatch(array $messages): void
+    public static function storeBatch(array $drafts): void
     {
         $now = Carbon::now();
-        $rows = [];
 
-        foreach ($messages as $message) {
-            $payload = $message['payload'];
-            $rows[] = [
-                OutboxMessageColumn::ID->value => Str::uuid()->toString(),
-                OutboxMessageColumn::CHANNEL->value => $message['channel'],
-                OutboxMessageColumn::HEADERS->value => isset($message['headers'])
-                    ? json_encode($message['headers'], JSON_THROW_ON_ERROR)
-                    : null,
-                OutboxMessageColumn::PAYLOAD->value => $payload,
-                OutboxMessageColumn::STATUS->value => OutboxStatus::Pending->id(),
-                OutboxMessageColumn::ATTEMPTS->value => 0,
-                OutboxMessageColumn::NEXT_RETRY_AT->value => $now,
-                OutboxMessageColumn::DEDUPLICATION_KEY->value => self::dedup($payload),
-                OutboxMessageColumn::CREATED_AT->value => $now,
-                OutboxMessageColumn::UPDATED_AT->value => $now,
-            ];
-        }
+        $rows = array_map(static fn (OutboxDraft $draft): array => [
+            OutboxMessageColumn::ID->value => Str::uuid()->toString(),
+            OutboxMessageColumn::CHANNEL->value => $draft->channel,
+            OutboxMessageColumn::HEADERS->value => $draft->headers !== []
+                ? json_encode($draft->headers, JSON_THROW_ON_ERROR)
+                : null,
+            OutboxMessageColumn::PAYLOAD->value => $draft->payload,
+            OutboxMessageColumn::STATUS->value => OutboxStatus::Pending->id(),
+            OutboxMessageColumn::ATTEMPTS->value => 0,
+            OutboxMessageColumn::NEXT_RETRY_AT->value => $now,
+            OutboxMessageColumn::DEDUPLICATION_KEY->value => $draft->deduplicationKey,
+            OutboxMessageColumn::CREATED_AT->value => $now,
+            OutboxMessageColumn::UPDATED_AT->value => $now,
+        ], $drafts);
 
         self::insertOrIgnore($rows);
     }
@@ -122,11 +121,11 @@ class OutboxMessage extends Model
     /**
      * @param  array<string, mixed>  $headers
      */
-    public static function store(string $channel, string $payload, array $headers = []): self
+    public static function store(string $channel, string $payload, string $deduplicationKey, array $headers = []): self
     {
         /** @var self $message */
         $message = self::firstOrCreate(
-            [OutboxMessageColumn::DEDUPLICATION_KEY->value => self::dedup($payload)],
+            [OutboxMessageColumn::DEDUPLICATION_KEY->value => $deduplicationKey],
             [
                 OutboxMessageColumn::CHANNEL->value => $channel,
                 OutboxMessageColumn::PAYLOAD->value => $payload,
@@ -154,7 +153,13 @@ class OutboxMessage extends Model
         return self::finishedOlderThan($cutoff);
     }
 
-    private static function dedup(string $payload): string
+    /**
+     * Content-addressed deduplication key. Opt-in helper for callers who want
+     * dedup by payload bytes — pass it explicitly as the deduplication key.
+     * Note: only stable if the payload is canonical per logical event (no
+     * timestamps / random fields), otherwise duplicates will not dedup.
+     */
+    public static function hashPayload(string $payload): string
     {
         return hash('murmur3f', $payload);
     }

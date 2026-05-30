@@ -14,7 +14,7 @@ use TransactionalOutbox\Models\OutboxMessage;
 
 describe('ProcessOutboxMessageJob', function () {
     beforeEach(function () {
-        $this->message = OutboxMessage::store('orders', '{"id":1}');
+        $this->message = OutboxMessage::store('orders', '{"id":1}', 'order.created:1');
     });
 
     describe('failed()', function () {

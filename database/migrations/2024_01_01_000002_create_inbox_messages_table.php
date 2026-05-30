@@ -47,7 +47,7 @@ return new class extends Migration
 
             $table->string('deduplication_key')
                 ->unique()
-                ->comment('Idempotency key (payload hash); prevents reprocessing duplicate messages');
+                ->comment('Caller-supplied idempotency key (usually the broker message id); unique to prevent reprocessing duplicate messages');
 
             $table->text('last_error_text')
                 ->nullable()

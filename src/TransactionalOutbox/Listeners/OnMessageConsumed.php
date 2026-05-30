@@ -14,6 +14,7 @@ class OnMessageConsumed
         InboxMessage::store(
             channel: $event->channel,
             payload: $event->payload,
+            deduplicationKey: $event->deduplicationKey,
             headers: $event->headers,
         );
     }
