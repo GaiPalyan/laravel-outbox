@@ -29,6 +29,7 @@ describe('OnMessageConsumed + ProcessMessagesCommand', function () {
         event(new MessageConsumed(
             channel: 'orders',
             payload: '{"id":1}',
+            deduplicationKey: 'broker-msg-1',
             headers: [],
         ));
 
@@ -44,7 +45,7 @@ describe('OnMessageConsumed + ProcessMessagesCommand', function () {
 
 describe('ProcessInboxMessageJob', function () {
     beforeEach(function () {
-        $this->message = InboxMessage::store('orders', '{"id":1}');
+        $this->message = InboxMessage::store('orders', '{"id":1}', 'broker-msg-1');
     });
 
     describe('failed()', function () {
