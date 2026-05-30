@@ -23,15 +23,17 @@ Laravel package implementing the **Transactional Outbox / Inbox** patterns. Brok
 
 ## Delivery semantics
 
-The package gives you **at-least-once delivery to the broker** plus **idempotent storage on both sides via a payload hash** (`murmur3f`). Composed together, this is what is commonly called **effectively-exactly-once**:
+The package gives you **at-least-once delivery to the broker** plus **idempotent storage on both sides keyed on a caller-supplied `deduplication_key`**. Composed together, this is what is commonly called **effectively-exactly-once**:
 
-- **Outbox side.** `OutboxMessage::store()` is a `firstOrCreate` keyed on `deduplication_key = hash(payload)`. Calling it twice with the same payload inside a retried HTTP request or a retried job stores one row, not two.
+- **Outbox side.** `OutboxMessage::store()` is a `firstOrCreate` keyed on the `deduplicationKey` you pass. Calling it twice with the same key inside a retried HTTP request or a retried job stores one row, not two.
 - **Publisher worker.** Keeps retrying with exponential backoff until your `OutboxPublisherInterface::publish()` returns without throwing. If the broker accepts the message but the ack is lost, the worker will publish again — downstream **must** be idempotent. This is fundamental to any outbox; the package does not paper over it.
-- **Inbox side.** `InboxMessage::store()` is also `firstOrCreate` by payload hash. Re-deliveries from the broker for the same payload land on the same row, the handler runs once.
+- **Inbox side.** `InboxMessage::store()` is also `firstOrCreate` on the key you pass — typically the **broker message id**. Re-deliveries of the same message land on the same row, the handler runs once.
 
-True exactly-once delivery to a remote broker is impossible (FLP, two-generals); don't promise it. What you can promise to downstream consumers is **effectively-exactly-once processing of each unique payload**, which is what this package implements.
+True exactly-once delivery to a remote broker is impossible (FLP, two-generals); don't promise it. What you can promise to downstream consumers is **effectively-exactly-once processing of each logical message**, which is what this package implements.
 
-> **Caveat.** Dedup is by payload **bytes**. If your payload embeds a timestamp, a random ID, or any non-deterministic field, two logical duplicates will hash differently and **will not** dedup. Make payloads canonical per business event, or fold your own idempotency key into the payload (e.g. `{"id": "order-42-created", ...}`).
+> **The deduplication key is yours, by design.** The identity of a logical message — "is this the same event or a new one?" — is domain knowledge only the caller has; the package cannot infer it and does not try. You pass an explicit `deduplicationKey` (e.g. `order.created:42`, or `order.payout:42:attempt-2` when a second payout is intended). Make it stable for the same logical event and distinct for genuinely different ones.
+>
+> If you *want* content-addressed dedup (one row per unique payload), opt in explicitly with `OutboxMessage::hashPayload($payload)` as the key — but note it only holds if the payload is canonical (no timestamps / random fields), otherwise duplicates hash differently and won't dedup.
 
 ## Requirements
 
@@ -80,19 +82,35 @@ DB::transaction(function () use ($order) {
     OutboxMessage::store(
         channel: 'orders.created',
         payload: json_encode($order),
+        deduplicationKey: "order.created:{$order->id}",
         headers: ['X-Type' => 'OrderCreated'], // optional
     );
 });
 ```
 
-Batch insert (skips Eloquent events, useful for bulk producers):
+Batch insert (skips Eloquent events, useful for bulk producers). Each item is an
+`OutboxDraft` — the deduplication key is a required constructor argument, so it
+cannot be silently omitted for any message in the batch:
 
 ```php
+use TransactionalOutbox\Data\OutboxDraft;
+
 OutboxMessage::storeBatch([
-    ['channel' => 'orders.created', 'payload' => json_encode($order1)],
-    ['channel' => 'orders.updated', 'payload' => json_encode($order2)],
+    new OutboxDraft(
+        channel: 'orders.created',
+        payload: json_encode($order1),
+        deduplicationKey: "order.created:{$order1->id}",
+    ),
+    new OutboxDraft(
+        channel: 'orders.updated',
+        payload: json_encode($order2),
+        deduplicationKey: "order.updated:{$order2->id}:{$order2->version}",
+    ),
 ]);
 ```
+
+Duplicate keys inside a single batch (or against rows already stored) are skipped
+by the unique index — no need to pre-check the array yourself.
 
 ### 2. Implement `OutboxPublisherInterface` for your broker
 
@@ -220,6 +238,7 @@ final class RabbitMqListenCommand extends Command
                     event(new MessageConsumed(
                         channel: $this->argument('channel'),
                         payload: $msg->getBody(),
+                        deduplicationKey: $msg->get('message_id'), // broker message id
                         headers: $this->extractHeaders($msg),
                     ));
 
@@ -254,7 +273,7 @@ Run one process per (queue, channel) pair under supervisor / systemd:
 php artisan app:rabbitmq-listen orders.queue orders.created
 ```
 
-The package registers `OnMessageConsumed` to this event automatically. The listener stores the message in `inbox_messages` (idempotent by payload hash).
+The package registers `OnMessageConsumed` to this event automatically. The listener stores the message in `inbox_messages` (idempotent on the `deduplicationKey` you supply — use the broker message id so broker re-deliveries dedup).
 
 **Synchronicity contract — important.**
 
@@ -361,8 +380,9 @@ Both sides use exponential backoff on failure with configurable max attempts. St
 |---|---|
 | Provision broker (streams, topics, queues, subscriptions) | You |
 | Call `OutboxMessage::store()` inside DB transactions | You |
+| Supply a stable, logical `deduplicationKey` per message | You |
 | Implement and bind `OutboxPublisherInterface` | You |
 | Implement and bind `InboxHandlerInterface` per channel | You |
 | Run a broker subscriber that fires `MessageConsumed` | You |
 | Schedule `transactional-outbox:process outbox` and `... inbox` | You |
-| Storage, retries, dedup, backoff, pruning, transitions | Package |
+| Enforcing dedup on the key, storage, retries, backoff, pruning, transitions | Package |

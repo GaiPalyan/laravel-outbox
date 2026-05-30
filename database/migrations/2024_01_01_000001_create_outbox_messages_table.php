@@ -43,7 +43,7 @@ return new class extends Migration
 
             $table->string('deduplication_key')
                 ->unique()
-                ->comment('Idempotency key (payload hash); prevents duplicate outbox rows for the same payload');
+                ->comment('Caller-supplied idempotency key for the logical message; unique to prevent duplicate outbox rows for the same event');
 
             $table->text('last_error_text')
                 ->nullable()

@@ -82,7 +82,6 @@ class InboxMessage extends Model
         parent::boot();
 
         static::creating(static function (self $model) {
-            $model->deduplication_key ??= self::dedup($model->payload);
             $model->status_id ??= InboxStatus::Pending->id();
             $model->attempts ??= 0;
             $model->next_retry_at ??= Carbon::now();
@@ -92,11 +91,11 @@ class InboxMessage extends Model
     /**
      * @param  array<string, mixed>  $headers
      */
-    public static function store(string $channel, string $payload, array $headers = []): self
+    public static function store(string $channel, string $payload, string $deduplicationKey, array $headers = []): self
     {
         /** @var self $message */
         $message = self::firstOrCreate(
-            [InboxMessageColumn::DEDUPLICATION_KEY->value => self::dedup($payload)],
+            [InboxMessageColumn::DEDUPLICATION_KEY->value => $deduplicationKey],
             [
                 InboxMessageColumn::CHANNEL->value => $channel,
                 InboxMessageColumn::PAYLOAD->value => $payload,
@@ -124,7 +123,12 @@ class InboxMessage extends Model
         return self::finishedOlderThan($cutoff);
     }
 
-    private static function dedup(string $payload): string
+    /**
+     * Content-addressed deduplication key. Opt-in helper for callers who want
+     * dedup by payload bytes — pass it explicitly as the deduplication key.
+     * For inbox the natural key is usually the broker message id, not the body.
+     */
+    public static function hashPayload(string $payload): string
     {
         return hash('murmur3f', $payload);
     }
